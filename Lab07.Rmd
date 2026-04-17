@@ -87,7 +87,7 @@ test$es_cara_factor <- factor(ifelse(test$es_cara == 1, "Si", "No"), levels = c(
 ```
 
 
-### 3. Entrenamiento del Modelo de Regresión Logística
+### Entrenamiento del Modelo de Regresión Logística
 
 ```{r punto_3_modelo_rl, echo=FALSE, warning=FALSE}
 # ============================================================
@@ -147,7 +147,7 @@ A partir del modelo de regresión logística entrenado, confirmamos que todas la
 
 Por el contrario, la gráfica de impacto y los coeficientes revelan claramente qué características penalizan severamente el valor de una propiedad. Ofrecer una habitación privada reduce drásticamente la probabilidad de alcanzar la categoría premium, mientras que las habitaciones compartidas anulan esta probabilidad casi por completo.
 
-### 4. Validación del Modelo y Multicolinealidad
+### Validación del Modelo y Multicolinealidad
 
 ```{r punto 4, echo=FALSE, warning=FALSE}
 # ============================================================
@@ -177,7 +177,7 @@ Los resultados indican que ninguna de las variables predictoras supera el umbral
 La matriz de correlación visualiza de forma clara cómo interactúan estas variables numéricas en el mercado real. La capacidad tiene una correlación de 0.86 con el número de camas y de 0.83 con las habitaciones. Sin embargo, es interesante notar que la calificación de los usuarios es prácticamente independiente del tamaño físico de la propiedad lo que indica que una excelente experiencia del huésped no depende de qué tan grande sea el alojamiento.
 
 
-### 5. Evaluación de Rendimiento y Matriz de Confusión
+### Evaluación de Rendimiento y Matriz de Confusión
 
 ```{r punto_5_eficiencia, echo=FALSE, warning=FALSE}
 # ============================================================
@@ -227,7 +227,7 @@ ggplot(matriz_df, aes(x = Real, y = Prediccion, fill = Frecuencia)) +
 Al evaluar el modelo en el mercado real utilizando el umbral de decisión predeterminado de 0.5, el algoritmo demuestra una exactitud global (*Accuracy*) del 77.97%. El modelo destaca excepcionalmente por su altísima **Especificidad (91.87%)**, lo que significa que es sumamente preciso y conservador a la hora de identificar propiedades que **no** son caras, logrando clasificar correctamente 12,018 viviendas económicas o intermedias (Verdaderos Negativos) con una tasa mínima de falsas alarmas (1,064 Falsos Positivos). 
 
 
-### 6. Análisis de Sobreajuste y Curvas de Aprendizaje
+### Análisis de Sobreajuste y Curvas de Aprendizaje
 
 ```{r punto 6, echo=FALSE, warning=FALSE, message=FALSE}
 # ============================================================
