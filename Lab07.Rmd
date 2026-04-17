@@ -1,0 +1,286 @@
+---
+title: "Laboratorio 7 - Regresión Logística (SmartStay Advisors)"
+author: "Humberto de la Cruz - 23735, Daniel Juarez - 23709, Dilary Cruz - 231010"
+output: html_document
+---
+#### https://github.com/djuarez-2017510/Regresion-Logistica
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(car)        # Para VIF (multicolinealidad)
+library(corrplot)   # Para la matriz de correlación
+
+load("listings.RData")
+```
+
+```{r preparacion, echo=FALSE, warning=FALSE}
+# ============================================================
+# PREPARACIÓN DE DATOS Y DIVISIÓN TRAIN/TEST PUNTO 2
+# ============================================================
+colmutils <- c(
+  "price", "accommodates", "bedrooms", "beds", "bathrooms",
+  "latitude", "longitude", "property_type", "room_type",
+  "number_of_reviews", "review_scores_rating", "review_scores_location",
+  "availability_365", "estimated_occupancy_l365d", "minimum_nights",
+  "neighbourhood_cleansed", "host_is_superhost", "reviews_per_month", 
+  "review_scores_value"
+)
+
+listings_clean <- listings[, colmutils] %>%
+  mutate(price = as.numeric(gsub("[\\$,]", "", price))) %>%
+  drop_na(price)
+
+listings_clean <- listings_clean %>%
+  mutate(
+    room_type              = as.factor(room_type),
+    property_type          = as.factor(property_type),
+    neighbourhood_cleansed = as.factor(neighbourhood_cleansed),
+    host_is_superhost      = as.factor(host_is_superhost)
+  )
+
+# Misma semilla y split
+set.seed(123)
+train_index <- sample(1:nrow(listings_clean), 0.7 * nrow(listings_clean))
+train <- listings_clean[train_index, ]
+test  <- listings_clean[-train_index, ]
+
+q1 <- quantile(train$price, 0.33, na.rm = TRUE)
+q2 <- quantile(train$price, 0.66, na.rm = TRUE)
+
+train$categoria_precio <- factor(
+  ifelse(train$price <= q1, "Económica",
+  ifelse(train$price <= q2, "Intermedia", "Cara"))
+)
+test$categoria_precio <- factor(
+  ifelse(test$price <= q1, "Económica",
+  ifelse(test$price <= q2, "Intermedia", "Cara"))
+)
+
+```
+
+
+```{r punto_1_dicotomicas, echo=FALSE, warning=FALSE}
+# ============================================================
+# 1. CREACIÓN DE VARIABLES DICOTÓMICAS
+# ============================================================
+
+train <- train %>%
+  mutate(
+    es_economica = ifelse(categoria_precio == "Económica", 1, 0),
+    es_intermedia = ifelse(categoria_precio == "Intermedia", 1, 0),
+    es_cara = ifelse(categoria_precio == "Cara", 1, 0)
+  )
+
+test <- test %>%
+  mutate(
+    es_economica = ifelse(categoria_precio == "Económica", 1, 0),
+    es_intermedia = ifelse(categoria_precio == "Intermedia", 1, 0),
+    es_cara = ifelse(categoria_precio == "Cara", 1, 0)
+  )
+
+# Caret requiere que la variable respuesta sea un factor para el modelo de clasificación
+train$es_cara_factor <- factor(ifelse(train$es_cara == 1, "Si", "No"), levels = c("No", "Si"))
+test$es_cara_factor <- factor(ifelse(test$es_cara == 1, "Si", "No"), levels = c("No", "Si"))
+```
+
+
+### 3. Entrenamiento del Modelo de Regresión Logística
+
+```{r punto_3_modelo_rl, echo=FALSE, warning=FALSE}
+# ============================================================
+# 3. ENTRENAMIENTO Y PRESENTACIÓN ESTÉTICA DEL MODELO
+# ============================================================
+library(broom) # Para limpiar los resultados del modelo
+
+# 1. Preparación de datos (limpieza de NAs)
+vars_modelo <- c("accommodates", "bedrooms", "bathrooms", "beds", "review_scores_rating", "room_type", "es_cara_factor")
+train_rl <- train %>% drop_na(all_of(vars_modelo))
+test_rl <- test %>% drop_na(all_of(vars_modelo))
+
+# 2. Entrenamiento
+control_cv_rl <- trainControl(method = "cv", number = 10, classProbs = TRUE)
+set.seed(123)
+modelo_rl_cara <- train(
+  es_cara_factor ~ accommodates + bedrooms + bathrooms + beds + review_scores_rating + room_type,
+  data = train_rl, method = "glm", family = "binomial", trControl = control_cv_rl
+)
+
+# 3. TABLA ESTÉTICA DE COEFICIENTES
+# Convertimos a tabla limpia y calculamos Odds Ratios (exponencial de los coeficientes)
+tabla_resultados <- tidy(modelo_rl_cara$finalModel) %>%
+  mutate(
+    Odds_Ratio = exp(estimate),
+    Significancia = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+
+knitr::kable(tabla_resultados, digits = 3, 
+             caption = "Resumen Estadístico del Modelo de Regresión Logística (Propiedades Caras)",
+             col.names = c("Variable", "Estimación (Logit)", "Error Est.", "Estadístico z", "P-Valor", "Odds Ratio", "Signif."))
+
+# 4. GRÁFICO DE COEFICIENTES (Visualización Profesional)
+# Filtramos el Intercept para que no distorsione la escala del gráfico
+ggplot(tabla_resultados %>% filter(term != "(Intercept)"), 
+       aes(x = reorder(term, estimate), y = estimate, fill = estimate > 0)) +
+  geom_bar(stat = "identity", width = 0.7, show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_manual(values = c("#E63946", "#2A9D8F")) +
+  labs(
+    title = "Impacto de las Variables en la Clasificación 'Cara'",
+    subtitle = "Valores positivos (verde) aumentan la probabilidad de ser una propiedad cara",
+    x = "Variable Predictora",
+    y = "Peso en el Modelo (Coeficiente)"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+### Analisis 
+
+A partir del modelo de regresión logística entrenado, confirmamos que todas las variables seleccionadas son estadísticamente significativas para determinar el precio de un alojamiento. Al analizar el Odds Ratio, identificamos que el factor que más incrementa la probabilidad de clasificar una propiedad como "Cara" es que se trate de una habitación de hotel, seguido por la cantidad de baños. Adicionalmente, mantener una excelente puntuación en las reseñas y contar con mayor capacidad general o más habitaciones también suman un valor considerable.
+
+Por el contrario, la gráfica de impacto y los coeficientes revelan claramente qué características penalizan severamente el valor de una propiedad. Ofrecer una habitación privada reduce drásticamente la probabilidad de alcanzar la categoría premium, mientras que las habitaciones compartidas anulan esta probabilidad casi por completo.
+
+### 4. Validación del Modelo y Multicolinealidad
+
+```{r punto 4, echo=FALSE, warning=FALSE}
+# ============================================================
+# 4. ANÁLISIS DE MULTICOLINEALIDAD Y CORRELACIÓN
+# ============================================================
+
+cat("--- Análisis de Multicolinealidad (VIF) ---\n")
+# Extraemos el modelo final para calcular el VIF
+vif_valores <- vif(modelo_rl_cara$finalModel)
+print(vif_valores)
+
+
+vars_num <- c("accommodates", "bedrooms", "bathrooms", "beds", "review_scores_rating")
+
+# Usamos train_rl aquí también para mantener consistencia
+cor_matrix <- cor(train_rl[, vars_num], use = "complete.obs")
+
+# Visualizamos la matriz
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.8,
+         title = "Correlación de Variables Predictoras", mar = c(0,0,1,0))
+```
+
+Los resultados indican que ninguna de las variables predictoras supera el umbral crítico de 5, siendo la capacidad general (accommodates) la que presenta el valor más alto con 4.02. Esto nos permite concluir que, aunque existe cierta relación natural entre las características físicas de las propiedades, no hay una multicolinealidad severa que infle los errores estándar
+
+La matriz de correlación visualiza de forma clara cómo interactúan estas variables numéricas en el mercado real. La capacidad tiene una correlación de 0.86 con el número de camas y de 0.83 con las habitaciones. Sin embargo, es interesante notar que la calificación de los usuarios es prácticamente independiente del tamaño físico de la propiedad lo que indica que una excelente experiencia del huésped no depende de qué tan grande sea el alojamiento.
+
+
+### 5. Evaluación de Rendimiento y Matriz de Confusión
+
+```{r punto_5_eficiencia, echo=FALSE, warning=FALSE}
+# ============================================================
+# 5. EFICIENCIA DEL ALGORITMO (MATRIZ DE CONFUSIÓN)
+# ============================================================
+
+# Predecimos las probabilidades en el conjunto de prueba
+pred_probs <- predict(modelo_rl_cara, newdata = test_rl, type = "prob")
+
+# Aplicamos el umbral de decisión estricto de 0.5
+pred_clase <- factor(ifelse(pred_probs$Si > 0.5, "Si", "No"), levels = c("No", "Si"))
+
+# Generamos la matriz de confusión
+matriz_rl <- confusionMatrix(pred_clase, test_rl$es_cara_factor, positive = "Si")
+
+# 1. TABLA DE MÉTRICAS ESTÉTICA
+metricas <- data.frame(
+  Metrica = c("Accuracy Global (Exactitud)", "Sensibilidad (Identificar casas caras)", "Especificidad (Identificar casas NO caras)"),
+  Valor = c(paste0(round(matriz_rl$overall["Accuracy"] * 100, 2), " %"),
+            paste0(round(matriz_rl$byClass["Sensitivity"] * 100, 2), " %"),
+            paste0(round(matriz_rl$byClass["Specificity"] * 100, 2), " %"))
+)
+
+knitr::kable(metricas, col.names = c("Métrica de Rendimiento", "Resultado (Umbral 0.5)"), 
+             caption = "Evaluación de Eficiencia en el Conjunto de Prueba")
+
+# 2. GRÁFICO DE LA MATRIZ DE CONFUSIÓN (HEATMAP)
+matriz_df <- as.data.frame(matriz_rl$table)
+colnames(matriz_df) <- c("Prediccion", "Real", "Frecuencia")
+
+ggplot(matriz_df, aes(x = Real, y = Prediccion, fill = Frecuencia)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Frecuencia), size = 6, fontface = "bold", color = ifelse(matriz_df$Frecuencia > 5000, "white", "black")) +
+  scale_fill_gradient(low = "#F1FAEE", high = "#457B9D") +
+  labs(
+    title = "Matriz de Confusión - Regresión Logística",
+    subtitle = "Predicciones vs Valores Reales (Umbral de decisión: 0.5)",
+    x = "Categoría Real",
+    y = "Predicción del Modelo"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none") 
+```
+
+### Análisis del Rendimiento
+
+Al evaluar el modelo en el mercado real utilizando el umbral de decisión predeterminado de 0.5, el algoritmo demuestra una exactitud global (*Accuracy*) del 77.97%. El modelo destaca excepcionalmente por su altísima **Especificidad (91.87%)**, lo que significa que es sumamente preciso y conservador a la hora de identificar propiedades que **no** son caras, logrando clasificar correctamente 12,018 viviendas económicas o intermedias (Verdaderos Negativos) con una tasa mínima de falsas alarmas (1,064 Falsos Positivos). 
+
+
+### 6. Análisis de Sobreajuste y Curvas de Aprendizaje
+
+```{r punto 6, echo=FALSE, warning=FALSE, message=FALSE}
+# ============================================================
+# 6. Análisis de Sobreajuste y Curvas de Aprendizaje
+# ============================================================
+
+# 1. TABLA ESTÉTICA DE ERRORES
+acc_train <- max(modelo_rl_cara$results$Accuracy)
+error_train <- 1 - acc_train
+acc_test <- matriz_rl$overall["Accuracy"]
+error_test <- 1 - acc_test
+
+tabla_errores <- data.frame(
+  Fase = c("Entrenamiento (Train)", "Prueba (Test)"),
+  Error = c(paste0(round(error_train * 100, 2), " %"),
+            paste0(round(error_test * 100, 2), " %"))
+)
+
+# Se quitó el print() para que R Markdown renderice la tabla correctamente
+knitr::kable(tabla_errores, caption = "Comparativa de Errores para descartar Sobreajuste")
+
+
+# 2. CURVA DE APRENDIZAJE SUAVIZADA
+vars_curva <- c("accommodates", "bedrooms", "bathrooms", "beds", "review_scores_rating", "room_type", "es_cara_factor")
+datos_curva <- train_rl %>% select(all_of(vars_curva))
+
+set.seed(123)
+
+# invisible(capture.output()) "se traga" el texto de Training for 10%... para que no salga en el PDF/HTML
+invisible(capture.output({
+  curva_datos <- learning_curve_dat(dat = datos_curva, 
+                                    outcome = "es_cara_factor",
+                                    test_prop = 0.25, 
+                                    method = "glm", 
+                                    family = "binomial",
+                                    metric = "Accuracy",
+                                    trControl = trainControl(method = "cv", number = 3))
+}))
+
+# Agregamos formula = y ~ x en geom_smooth para que no tire advertencias
+ggplot(curva_datos, aes(x = Training_Size, y = Accuracy, color = Data)) +
+  geom_smooth(method = "loess", formula = y ~ x, se = FALSE, linewidth = 1.2) + 
+  geom_point(alpha = 0.4, size = 2) + 
+  scale_color_manual(values = c("#E63946", "#457B9D", "#2A9D8F")) +
+  labs(title = "Curva de Aprendizaje - Regresión Logística",
+       subtitle = "Rendimiento suavizado vs Tamaño de la Muestra",
+       x = "Tamaño del Conjunto de Entrenamiento",
+       y = "Accuracy") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+```
+
+Al analizar la comparativa de errores, observamos que el error de entrenamiento (21.64%) es prácticamente idéntico al error de prueba (22.03%). Esta diferencia de un 0.39% nos dice empíricamente que el algoritmo no se limitó a memorizar los datos con los que fue entrenado.
+
+La curva de aprendizaje a medida que el volumen de datos de entrenamiento aumenta en el eje horizontal, observamos cómo las tendencias de rendimiento superan la volatilidad inicial y convergen de manera altamente estable. A partir de las 20,000 observaciones, las tres métricas se estabilizan formando una meseta constante cercana al 78.4% de exactitud.
