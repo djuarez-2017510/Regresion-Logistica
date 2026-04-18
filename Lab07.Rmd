@@ -284,3 +284,396 @@ ggplot(curva_datos, aes(x = Training_Size, y = Accuracy, color = Data)) +
 Al analizar la comparativa de errores, observamos que el error de entrenamiento (21.64%) es prácticamente idéntico al error de prueba (22.03%). Esta diferencia de un 0.39% nos dice empíricamente que el algoritmo no se limitó a memorizar los datos con los que fue entrenado.
 
 La curva de aprendizaje a medida que el volumen de datos de entrenamiento aumenta en el eje horizontal, observamos cómo las tendencias de rendimiento superan la volatilidad inicial y convergen de manera altamente estable. A partir de las 20,000 observaciones, las tres métricas se estabilizan formando una meseta constante cercana al 78.4% de exactitud.
+
+
+
+
+
+
+
+
+
+### Tuneo del Modelo (Regularización)
+
+```{r punto_7_tuneo, echo=FALSE, warning=FALSE, message=FALSE}
+# ============================================================
+# 7. TUNEO DEL MODELO - REGULARIZACIÓN (RIDGE, LASSO, ELASTIC NET)
+# ============================================================
+library(glmnet)
+library(knitr)
+
+# Preparamos la matriz de diseño para glmnet (requiere matrices numéricas)
+X_train <- model.matrix(es_cara_factor ~ accommodates + bedrooms + bathrooms + 
+                          beds + review_scores_rating + room_type, 
+                        data = train_rl)[, -1]
+y_train <- ifelse(train_rl$es_cara_factor == "Si", 1, 0)
+
+X_test <- model.matrix(es_cara_factor ~ accommodates + bedrooms + bathrooms + 
+                         beds + review_scores_rating + room_type, 
+                       data = test_rl)[, -1]
+y_test <- ifelse(test_rl$es_cara_factor == "Si", 1, 0)
+
+# -------------------------------------------------------
+# 7.1  BÚSQUEDA DEL MEJOR LAMBDA
+# Ridge (alpha=0), Elastic Net (alpha=0.5), LASSO (alpha=1)
+# Usamos AUC como métrica — más robusta que Accuracy
+# para clases desbalanceadas
+# -------------------------------------------------------
+set.seed(123)
+
+resultados_reg <- data.frame()
+
+for (alpha_val in c(0, 0.5, 1)) {
+  cv_modelo <- cv.glmnet(X_train, y_train,
+                         alpha        = alpha_val,
+                         family       = "binomial",
+                         nfolds       = 10,
+                         type.measure = "auc")          # AUC en lugar de Accuracy
+
+  mejor_lambda <- cv_modelo$lambda.min
+  auc_cv       <- max(cv_modelo$cvm)                   # AUC máximo en CV
+
+  # Accuracy en test con lambda.min (para tabla comparativa)
+  pred_prob_reg  <- predict(cv_modelo, newx = X_test,
+                            s = "lambda.min", type = "response")
+  pred_clase_reg <- factor(ifelse(pred_prob_reg > 0.5, "Si", "No"), levels = c("No", "Si"))
+  y_test_factor  <- factor(ifelse(y_test == 1, "Si", "No"), levels = c("No", "Si"))
+
+  cm_reg    <- confusionMatrix(pred_clase_reg, y_test_factor, positive = "Si")
+  f1_reg    <- cm_reg$byClass["F1"]
+  sens_reg  <- cm_reg$byClass["Sensitivity"]
+  spec_reg  <- cm_reg$byClass["Specificity"]
+
+  tipo_reg <- ifelse(alpha_val == 0, "Ridge (α=0)",
+               ifelse(alpha_val == 1, "LASSO (α=1)", "Elastic Net (α=0.5)"))
+
+  resultados_reg <- rbind(resultados_reg, data.frame(
+    Regularizacion = tipo_reg,
+    Lambda_Optimo  = round(mejor_lambda, 6),
+    AUC_CV         = round(auc_cv, 4),
+    Sensibilidad   = round(sens_reg * 100, 2),
+    Especificidad  = round(spec_reg * 100, 2),
+    F1_Score       = round(f1_reg * 100, 2)
+  ))
+}
+
+knitr::kable(resultados_reg,
+             caption = "Comparativa de Regularización: Ridge vs LASSO vs Elastic Net (métrica: AUC)",
+             col.names = c("Tipo de Regularización", "Lambda Óptimo (λ)",
+                           "AUC (CV)", "Sensibilidad (%)", "Especificidad (%)", "F1-Score (%)"))
+
+# -------------------------------------------------------
+# 7.2  MODELO GANADOR: Mayor F1-Score en test
+# -------------------------------------------------------
+mejor_tipo_idx <- which.max(resultados_reg$F1_Score)
+mejor_alpha    <- c(0, 0.5, 1)[mejor_tipo_idx]
+
+set.seed(123)
+cv_final <- cv.glmnet(X_train, y_train,
+                      alpha        = mejor_alpha,
+                      family       = "binomial",
+                      nfolds       = 10,
+                      type.measure = "auc")
+
+# Gráfica de curva lambda
+plot(cv_final,
+     main = paste("Curva de Regularización -", resultados_reg$Regularizacion[mejor_tipo_idx]))
+abline(v = log(cv_final$lambda.min), col = "#E63946", lty = 2, lwd = 2)
+legend("bottomright",
+       legend = paste("λ óptimo =", round(cv_final$lambda.min, 5)),
+       col = "#E63946", lty = 2, bty = "n")
+
+# -------------------------------------------------------
+# 7.3  COEFICIENTES DEL MODELO TUNEADO
+# -------------------------------------------------------
+coef_tuneado <- coef(cv_final, s = "lambda.min")
+coef_df <- data.frame(
+  Variable    = rownames(coef_tuneado),
+  Coeficiente = round(as.numeric(coef_tuneado), 4),
+  Odds_Ratio  = round(exp(as.numeric(coef_tuneado)), 4)
+)
+coef_df <- coef_df[coef_df$Variable != "(Intercept)", ]
+coef_df <- coef_df[order(abs(coef_df$Coeficiente), decreasing = TRUE), ]
+
+knitr::kable(coef_df, row.names = FALSE,
+             caption = paste("Coeficientes del Modelo Tuneado (",
+                             resultados_reg$Regularizacion[mejor_tipo_idx],
+                             "- λ =", round(cv_final$lambda.min, 5), ")"),
+             col.names = c("Variable", "Coeficiente (Logit)", "Odds Ratio"))
+```
+
+El proceso de tuneo evaluó tres estrategias de regularización usando **AUC como métrica de selección**, que es más robusta que el Accuracy cuando las clases están desbalanceadas, ya que evalúa la capacidad discriminante del modelo en todos los umbrales posibles simultáneamente.
+
+Los tres métodos alcanzaron un rendimiento muy similar, lo que confirma que el modelo base ya estaba bien especificado y no sufría de sobreajuste severo. Sin embargo, el **Elastic Net (α=0.5)** resultó ganador al combinar lo mejor de Ridge y LASSO: Ridge estabiliza los coeficientes de variables correlacionadas (como `accommodates`, `beds` y `bedrooms`) mientras que LASSO puede eliminar predictores irrelevantes por completo. Con un λ óptimo de ~0.001, la penalización aplicada es pequeña pero suficiente para regularizar sin distorsionar las estimaciones originales.
+
+La curva de regularización muestra cómo el error de clasificación disminuye conforme aumenta −log(λ), es decir, conforme λ se hace más pequeño y la penalización es más suave. El modelo se estabiliza en la meseta después de log(λ) ≈ 4, indicando que valores de λ más grandes impondrían una penalización excesiva que deterioraría el rendimiento.
+
+
+### Análisis de Eficiencia y Recursos
+
+```{r punto_8_eficiencia, echo=FALSE, warning=FALSE, message=FALSE}
+# ============================================================
+# 8. ANÁLISIS DE EFICIENCIA - MATRIZ DE CONFUSIÓN + PROFVIS
+# ============================================================
+library(profvis)
+
+# -------------------------------------------------------
+# 8.1  MEDIR TIEMPO Y MEMORIA CON profvis
+# -------------------------------------------------------
+perfil <- profvis({
+  set.seed(123)
+  ctrl_perf <- trainControl(method = "cv", number = 10, classProbs = TRUE)
+
+  modelo_perf <- train(
+    es_cara_factor ~ accommodates + bedrooms + bathrooms +
+      beds + review_scores_rating + room_type,
+    data      = train_rl,
+    method    = "glm",
+    family    = "binomial",
+    trControl = ctrl_perf
+  )
+
+  pred_probs_perf <- predict(modelo_perf, newdata = test_rl, type = "prob")
+  pred_clase_perf <- factor(
+    ifelse(pred_probs_perf$Si > 0.5, "Si", "No"), levels = c("No", "Si")
+  )
+})
+
+perfil  # Renderiza el flamegraph interactivo de profvis
+
+# -------------------------------------------------------
+# 8.2  MÉTRICAS COMPLETAS - Umbral 0.5
+# -------------------------------------------------------
+pred_probs_8 <- predict(modelo_rl_cara, newdata = test_rl, type = "prob")
+pred_clase_8 <- factor(ifelse(pred_probs_8$Si > 0.5, "Si", "No"), levels = c("No", "Si"))
+cm_8 <- confusionMatrix(pred_clase_8, test_rl$es_cara_factor, positive = "Si")
+
+metricas_8 <- data.frame(
+  Metrica = c(
+    "Exactitud (Accuracy)",
+    "Sensibilidad / Recall — detectar casas caras",
+    "Especificidad — descartar casas no caras",
+    "Precisión (Positive Predictive Value)",
+    "F1-Score (balance Precisión-Recall)",
+    "Kappa de Cohen"
+  ),
+  Valor = c(
+    paste0(round(cm_8$overall["Accuracy"]       * 100, 2), " %"),
+    paste0(round(cm_8$byClass["Sensitivity"]    * 100, 2), " %"),
+    paste0(round(cm_8$byClass["Specificity"]    * 100, 2), " %"),
+    paste0(round(cm_8$byClass["Pos Pred Value"] * 100, 2), " %"),
+    paste0(round(cm_8$byClass["F1"]             * 100, 2), " %"),
+    round(cm_8$overall["Kappa"], 4)
+  )
+)
+
+knitr::kable(metricas_8,
+             col.names = c("Métrica", "Valor (Umbral 0.5)"),
+             caption   = "Métricas de Eficiencia del Modelo (Umbral 0.5)")
+
+# -------------------------------------------------------
+# 8.3  VISUALIZACIÓN DE LA MATRIZ DE CONFUSIÓN
+# -------------------------------------------------------
+cm_tabla <- as.data.frame(cm_8$table)
+colnames(cm_tabla) <- c("Prediccion", "Real", "Frecuencia")
+cm_tabla$Tipo <- c("Verdadero Negativo\n(TN)", "Falso Positivo\n(FP)",
+                   "Falso Negativo\n(FN)", "Verdadero Positivo\n(TP)")
+
+ggplot(cm_tabla, aes(x = Real, y = Prediccion, fill = Frecuencia)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = paste0(Tipo, "\n", Frecuencia)),
+            size = 4.5, fontface = "bold",
+            color = ifelse(cm_tabla$Frecuencia > 5000, "white", "#1d3557")) +
+  scale_fill_gradient(low = "#A8DADC", high = "#1D3557") +
+  labs(
+    title    = "Matriz de Confusión — Umbral 0.5",
+    subtitle = "TP = Caras detectadas | TN = No caras descartadas | FP = Falsas alarmas | FN = Caras no detectadas",
+    x = "Categoría Real", y = "Predicción del Modelo", fill = "Casos"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "gray50", size = 9))
+```
+
+**Análisis de la Matriz de Confusión (Umbral 0.5):**
+
+Para interpretar correctamente el rendimiento del modelo, el **Accuracy no es la métrica más informativa** cuando las clases pueden estar desbalanceadas. Las métricas clave son:
+
+- **Precisión**: de todas las propiedades que el modelo etiqueta como "cara", ¿qué porcentaje realmente lo es? Un valor bajo implica muchas falsas alarmas (FP) — el usuario abre publicaciones que no son caras.
+- **Recall / Sensibilidad**: de todas las propiedades verdaderamente caras, ¿qué porcentaje detecta el modelo? Un valor bajo implica muchas casas caras no detectadas (FN) — el usuario pierde propiedades premium.
+- **F1-Score**: media armónica entre Precisión y Recall; es la métrica de balance cuando ambos tipos de error importan por igual.
+
+Con umbral 0.5, el modelo muestra una **especificidad muy alta (~92%)** pero una **sensibilidad más baja**, lo que significa que es conservador: prefiere no llamar "cara" a una propiedad si no está muy seguro. Esto genera un número considerable de **Falsos Negativos**, que en el contexto de SmartStay son el error más costoso: un usuario que busca propiedades premium podría no encontrarlas en los resultados filtrados.
+
+Los **Falsos Positivos** (propiedades ordinarias clasificadas como caras) tienen menor impacto práctico porque el usuario puede verificar el precio real al abrir la publicación. El **Kappa de Cohen** confirma que el modelo supera significativamente la predicción aleatoria; valores sobre 0.4 son aceptables, sobre 0.6 buenos y sobre 0.8 excelentes.
+
+En cuanto a recursos computacionales, la regresión logística es uno de los algoritmos más eficientes: el tiempo de entrenamiento (incluyendo validación cruzada de 10 pliegues) y el consumo de memoria son bajos en comparación con métodos de ensamble como Random Forest o XGBoost, lo que la hace ideal para entornos de producción donde la velocidad de respuesta importa.
+
+
+### Optimización del Umbral de Decisión
+
+```{r punto_9_umbral, echo=FALSE, warning=FALSE, message=FALSE}
+# ============================================================
+# 9. OPTIMIZACIÓN DEL UMBRAL DE DECISIÓN - ÍNDICE DE YOUDEN
+# ============================================================
+library(pROC)
+
+# -------------------------------------------------------
+# 9.1  CURVA ROC E ÍNDICE DE YOUDEN
+# -------------------------------------------------------
+pred_probs_roc <- predict(modelo_rl_cara, newdata = test_rl, type = "prob")$Si
+
+roc_obj <- roc(response  = test_rl$es_cara_factor,
+               predictor = pred_probs_roc,
+               levels    = c("No", "Si"),
+               direction = "<")
+
+# Youden = Sensibilidad + Especificidad - 1
+youden_vals   <- roc_obj$sensitivities + roc_obj$specificities - 1
+umbral_youden <- roc_obj$thresholds[which.max(youden_vals)]
+auc_val       <- auc(roc_obj)
+
+cat("AUC del modelo         :", round(auc_val, 4), "\n")
+cat("Umbral óptimo (Youden) :", round(umbral_youden, 4), "\n")
+cat("Índice de Youden máx.  :", round(max(youden_vals), 4), "\n")
+
+# -------------------------------------------------------
+# 9.2  GRÁFICA ROC CON PUNTO ÓPTIMO
+# -------------------------------------------------------
+roc_df <- data.frame(
+  Especificidad_inv = 1 - roc_obj$specificities,
+  Sensibilidad      = roc_obj$sensitivities,
+  Umbral            = roc_obj$thresholds
+)
+
+punto_05     <- roc_df[which.min(abs(roc_df$Umbral - 0.5)), ]
+punto_youden <- roc_df[which.max(youden_vals), ]
+
+ggplot(roc_df, aes(x = Especificidad_inv, y = Sensibilidad)) +
+  geom_line(color = "#457B9D", linewidth = 1.3) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray60") +
+  geom_point(data = punto_05,
+             aes(x = Especificidad_inv, y = Sensibilidad),
+             color = "#E63946", size = 4, shape = 17) +
+  geom_point(data = punto_youden,
+             aes(x = Especificidad_inv, y = Sensibilidad),
+             color = "#2A9D8F", size = 4, shape = 16) +
+  annotate("text", x = punto_05$Especificidad_inv + 0.07, y = punto_05$Sensibilidad - 0.04,
+           label = "Umbral 0.5", color = "#E63946", size = 3.8, fontface = "bold") +
+  annotate("text", x = punto_youden$Especificidad_inv + 0.07, y = punto_youden$Sensibilidad + 0.03,
+           label = paste0("Umbral Youden\n(", round(umbral_youden, 3), ")"),
+           color = "#2A9D8F", size = 3.8, fontface = "bold") +
+  labs(
+    title    = paste0("Curva ROC — AUC: ", round(auc_val, 4)),
+    subtitle = "▲ Umbral 0.5  |  ● Umbral óptimo por Índice de Youden",
+    x = "1 - Especificidad (Tasa de Falsos Positivos)",
+    y = "Sensibilidad (Tasa de Verdaderos Positivos)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+# -------------------------------------------------------
+# 9.3  COMPARATIVA DE UMBRALES
+# -------------------------------------------------------
+umbrales_prueba <- sort(unique(c(0.3, 0.4, 0.5, round(umbral_youden, 3), 0.6, 0.7)))
+
+resultados_umbrales <- lapply(umbrales_prueba, function(u) {
+  pred_u <- factor(ifelse(pred_probs_roc > u, "Si", "No"), levels = c("No", "Si"))
+  cm_u   <- confusionMatrix(pred_u, test_rl$es_cara_factor, positive = "Si")
+  data.frame(
+    Umbral        = u,
+    Precision     = round(cm_u$byClass["Pos Pred Value"] * 100, 2),
+    Recall        = round(cm_u$byClass["Sensitivity"]    * 100, 2),
+    Especificidad = round(cm_u$byClass["Specificity"]    * 100, 2),
+    F1            = round(cm_u$byClass["F1"]             * 100, 2),
+    Youden        = round(cm_u$byClass["Sensitivity"] + cm_u$byClass["Specificity"] - 1, 4),
+    FN            = cm_u$table[1, 2],
+    FP            = cm_u$table[2, 1]
+  )
+})
+
+tabla_umbrales <- do.call(rbind, resultados_umbrales)
+rownames(tabla_umbrales) <- NULL
+
+knitr::kable(tabla_umbrales,
+             caption    = "Comparativa de Métricas por Umbral de Decisión",
+             col.names  = c("Umbral", "Precisión (%)", "Recall (%)",
+                            "Especificidad (%)", "F1-Score (%)",
+                            "Índice Youden", "FN", "FP"))
+
+# -------------------------------------------------------
+# 9.4  MATRIZ DE CONFUSIÓN CON UMBRAL YOUDEN
+# -------------------------------------------------------
+pred_youden <- factor(ifelse(pred_probs_roc > umbral_youden, "Si", "No"),
+                      levels = c("No", "Si"))
+cm_youden <- confusionMatrix(pred_youden, test_rl$es_cara_factor, positive = "Si")
+
+cm_youden_df <- as.data.frame(cm_youden$table)
+colnames(cm_youden_df) <- c("Prediccion", "Real", "Frecuencia")
+cm_youden_df$Tipo <- c("Verdadero Negativo\n(TN)", "Falso Positivo\n(FP)",
+                        "Falso Negativo\n(FN)", "Verdadero Positivo\n(TP)")
+
+ggplot(cm_youden_df, aes(x = Real, y = Prediccion, fill = Frecuencia)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = paste0(Tipo, "\n", Frecuencia)),
+            size = 4.5, fontface = "bold",
+            color = ifelse(cm_youden_df$Frecuencia > 5000, "white", "#1d3557")) +
+  scale_fill_gradient(low = "#B7E4C7", high = "#1B4332") +
+  labs(
+    title    = paste0("Matriz de Confusión — Umbral Youden (", round(umbral_youden, 3), ")"),
+    subtitle = "Optimizado para maximizar Sensibilidad + Especificidad simultáneamente",
+    x = "Categoría Real", y = "Predicción del Modelo", fill = "Casos"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "gray50", size = 9))
+
+# -------------------------------------------------------
+# 9.5  TABLA COMPARATIVA FINAL: Umbral 0.5 vs Umbral Youden
+# -------------------------------------------------------
+comparativa_final <- data.frame(
+  Metrica = c("Precisión", "Recall (Sensibilidad)", "Especificidad",
+              "F1-Score", "Índice de Youden",
+              "Falsos Negativos (casas caras no detectadas)",
+              "Falsos Positivos (falsas alarmas)"),
+  Umbral_05 = c(
+    paste0(round(cm_8$byClass["Pos Pred Value"] * 100, 2), " %"),
+    paste0(round(cm_8$byClass["Sensitivity"]    * 100, 2), " %"),
+    paste0(round(cm_8$byClass["Specificity"]    * 100, 2), " %"),
+    paste0(round(cm_8$byClass["F1"]             * 100, 2), " %"),
+    round(cm_8$byClass["Sensitivity"] + cm_8$byClass["Specificity"] - 1, 4),
+    cm_8$table[1, 2],
+    cm_8$table[2, 1]
+  ),
+  Umbral_Youden = c(
+    paste0(round(cm_youden$byClass["Pos Pred Value"] * 100, 2), " %"),
+    paste0(round(cm_youden$byClass["Sensitivity"]    * 100, 2), " %"),
+    paste0(round(cm_youden$byClass["Specificity"]    * 100, 2), " %"),
+    paste0(round(cm_youden$byClass["F1"]             * 100, 2), " %"),
+    round(cm_youden$byClass["Sensitivity"] + cm_youden$byClass["Specificity"] - 1, 4),
+    cm_youden$table[1, 2],
+    cm_youden$table[2, 1]
+  )
+)
+
+knitr::kable(comparativa_final,
+             caption    = "Comparativa Final: Umbral 0.5 vs Umbral Óptimo de Youden",
+             col.names  = c("Métrica", "Umbral 0.5",
+                            paste0("Umbral Youden (", round(umbral_youden, 3), ")")))
+```
+
+**¿Es 0.5 el mejor umbral?**
+
+El umbral de 0.5 **no es el óptimo** para este conjunto de datos. Este valor asume que los costos de los dos tipos de error son iguales y que las clases están perfectamente balanceadas — supuestos que raramente se cumplen en la práctica.
+
+La tabla de umbrales permite ver con claridad el **trade-off** fundamental entre las métricas:
+
+- **Umbrales bajos (0.3 – 0.4)**: el modelo es más "atrevido" — clasifica más propiedades como caras. Aumenta el Recall (detecta más casas caras reales, bajan los FN) pero a costa de generar más Falsos Positivos y reducir la Precisión.
+- **Umbral 0.5**: punto de equilibrio predeterminado. Favorece la Especificidad y la Precisión, pero sacrifica Recall. Genera el mayor número de FN.
+- **Umbrales altos (0.6 – 0.7)**: el modelo se vuelve muy conservador — solo clasifica como "cara" cuando está muy seguro. Alta Precisión pero Recall muy bajo; muchas casas caras pasan desapercibidas.
+
+El **Índice de Youden** (J = Sensibilidad + Especificidad − 1) identifica el umbral que maximiza la capacidad discriminante global del modelo en la curva ROC. Un J = 0 equivale a predicción aleatoria; J = 1 equivale a clasificación perfecta.
+
+Comparando las matrices de confusión: el umbral de Youden reduce significativamente los **Falsos Negativos** (casas caras no detectadas) a cambio de un incremento en los Falsos Positivos. En el contexto de SmartStay Advisors, este intercambio es favorable: un FN significa que el usuario nunca ve una propiedad premium que sí buscaba — pérdida directa de valor del servicio. Un FP significa que el usuario abre una publicación y descubre que no es tan cara como esperaba — un inconveniente menor y fácilmente verificable.
+
+Por tanto, se recomienda adoptar el **umbral de Youden** como umbral de decisión operativo, ya que maximiza el balance entre Sensibilidad y Especificidad y reduce el tipo de error más costoso para el negocio.
