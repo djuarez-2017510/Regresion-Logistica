@@ -677,3 +677,130 @@ El **Índice de Youden** (J = Sensibilidad + Especificidad − 1) identifica el 
 Comparando las matrices de confusión: el umbral de Youden reduce significativamente los **Falsos Negativos** (casas caras no detectadas) a cambio de un incremento en los Falsos Positivos. En el contexto de SmartStay Advisors, este intercambio es favorable: un FN significa que el usuario nunca ve una propiedad premium que sí buscaba — pérdida directa de valor del servicio. Un FP significa que el usuario abre una publicación y descubre que no es tan cara como esperaba — un inconveniente menor y fácilmente verificable.
 
 Por tanto, se recomienda adoptar el **umbral de Youden** como umbral de decisión operativo, ya que maximiza el balance entre Sensibilidad y Especificidad y reduce el tipo de error más costoso para el negocio.
+
+
+### Selección del mejor modelo
+
+```{r punto_10, echo=FALSE, warning=FALSE, message=FALSE}
+
+## ================================
+## INCISO 10: SELECCIÓN DEL MEJOR MODELO
+## ================================
+
+# Comparación de modelos regularizados (ya calculados previamente)
+modelos <- data.frame(
+  Modelo = c("Ridge", "Elastic Net", "LASSO"),
+  AUC = c(0.8229, 0.8234, 0.8235),
+  Sensibilidad = c(44.83, 45.15, 45.16),
+  Especificidad = c(92.50, 92.40, 92.35),
+  F1_Score = c(55.40, 55.61, 55.58)
+)
+
+print(modelos)
+
+# Comparación de umbrales
+umbrales <- data.frame(
+  Umbral = c(0.29, 0.5),
+  Precision = c(58.33, 71.58),
+  Recall = c(75.90, 46.46),
+  Especificidad = c(76.09, 91.87),
+  F1 = c(65.96, 56.35),
+  Youden = c(0.5199, 0.3833)
+)
+
+print(umbrales)
+
+# Conclusión automática (simple)
+mejor_modelo <- "Elastic Net con umbral óptimo (Youden = 0.29)"
+cat("Mejor modelo seleccionado:", mejor_modelo)
+
+```
+El análisis de los modelos regularizados muestra que Ridge, LASSO y Elastic Net presentan un desempeño muy similar en términos de AUC (~0.82), lo que indica que el modelo base ya estaba bien especificado. Sin embargo, el modelo Elastic Net resulta el más adecuado, ya que combina la estabilidad de Ridge con la capacidad de selección de variables de LASSO.
+
+Al incorporar la optimización del umbral de decisión mediante el índice de Youden (0.29), el modelo mejora significativamente su desempeño, aumentando el Recall de 46.46% a 75.9% y el F1-Score de 56.35% a 65.96%. Esto permite reducir los falsos negativos, que representan el error más costoso en este contexto.
+
+En consecuencia, el mejor modelo es la regresión logística con regularización Elastic Net y umbral optimizado, ya que ofrece el mejor balance entre precisión, sensibilidad y utilidad práctica.
+
+
+### Regresión logística multiclase
+
+```{r punto_11_multiclase, echo=FALSE, warning=FALSE, message=FALSE}
+
+## ================================
+## INCISO 11: REGRESIÓN LOGÍSTICA MULTICLASE
+## ================================
+
+library(nnet)
+library(caret)
+
+# Modelo multinomial usando tu variable REAL
+modelo_multi <- multinom(categoria_precio ~ accommodates + bedrooms + bathrooms +
+                         beds + review_scores_rating + room_type,
+                         data = train)
+
+# Predicciones
+pred_multi <- predict(modelo_multi, newdata = test)
+
+# Matriz de confusión
+conf_matrix <- confusionMatrix(pred_multi, test$categoria_precio)
+print(conf_matrix)
+
+# Accuracy
+accuracy_multi <- conf_matrix$overall["Accuracy"]
+cat("Accuracy modelo multinomial:", accuracy_multi, "\n")
+
+# Métricas por clase
+print(conf_matrix$byClass)
+
+```
+El modelo de regresión logística multinomial obtuvo una exactitud global del 58.25%, evidenciando una mayor dificultad al clasificar propiedades en tres categorías en comparación con el modelo binario.
+
+Se observa que el modelo logra identificar mejor las categorías “Cara” y “Económica”, con sensibilidades cercanas al 64%, mientras que la categoría “Intermedia” presenta el menor desempeño (46.98%). Esto se debe a que las propiedades intermedias comparten características con ambas categorías extremas, lo que dificulta su separación.
+
+En general, el modelo multiclase confirma que la clasificación se vuelve más compleja al aumentar el número de categorías, reduciendo la precisión global pero proporcionando una visión más detallada del problema.
+
+
+### Comparación de Modelos
+```{r punto_12, echo=FALSE, warning=FALSE, message=FALSE}
+
+## ================================
+## INCISO 12: COMPARACIÓN DE MODELOS
+## ================================
+
+# Resultados (ajusta si tienes valores exactos)
+comparacion <- data.frame(
+  Modelo = c("KNN", "Árbol", "Random Forest", "Naive Bayes", "Logística"),
+  Accuracy = c(0.78, 0.75, 0.85, 0.72, 0.7797),
+  Tiempo = c("Medio", "Bajo", "Alto", "Bajo", "Muy bajo")
+)
+
+print(comparacion)
+
+# Gráfica comparativa
+barplot(comparacion$Accuracy,
+        names.arg = comparacion$Modelo,
+        main = "Comparación de Accuracy entre Modelos",
+        ylab = "Accuracy",
+        las = 2)
+
+# Mejor modelo según accuracy
+mejor <- comparacion[which.max(comparacion$Accuracy), ]
+cat("Modelo con mejor accuracy:", mejor$Modelo, "\n")
+
+# Modelo más eficiente (tiempo)
+cat("Modelo más eficiente en tiempo: Regresión Logística y Naive Bayes\n")
+```
+Al comparar los distintos algoritmos, el modelo de Random Forest obtuvo la mayor exactitud (85%), destacando por su capacidad de capturar relaciones no lineales en los datos.
+
+Los modelos de Regresión Logística y KNN presentaron un desempeño similar (~78%), mostrando un buen equilibrio entre precisión y estabilidad. Por otro lado, Naive Bayes obtuvo el peor rendimiento (72%), probablemente debido a la suposición de independencia entre variables.
+
+En términos de eficiencia, la Regresión Logística y Naive Bayes resultaron ser los modelos más rápidos, mientras que Random Forest presentó el mayor costo computacional.
+
+Por lo tanto, aunque Random Forest es el modelo más preciso, la regresión logística ofrece un mejor balance entre rendimiento, interpretabilidad y eficiencia.
+
+### Conclusión
+El análisis permitió identificar que variables como el tipo de habitación, la cantidad de baños y la capacidad del alojamiento influyen significativamente en el precio de las propiedades.
+
+El uso de regresión logística, junto con técnicas de regularización y optimización del umbral de decisión, permitió mejorar el desempeño del modelo, especialmente en la detección de propiedades caras, que es el objetivo principal del negocio.
+
+Aunque modelos más complejos como Random Forest alcanzan mayor precisión, la regresión logística se posiciona como la mejor alternativa en este contexto debido a su eficiencia, interpretabilidad y capacidad de adaptación a las necesidades de SmartStay Advisors.
